@@ -1,0 +1,28 @@
+{
+  "name": "E-ink Wallpaper Maker",
+  "short_name": "EinkMaker",
+  "description": "Convert photos into 16-level grayscale screensavers optimized for Kindle E-ink displays. Supports Floyd-Steinberg dithering, custom device profiles, and offline use.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "orientation": "any",
+  "lang": "en-US",
+  "categories": ["photo", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable any"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": []
+}

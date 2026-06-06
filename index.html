@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Convert images to optimized E-ink wallpapers for Kindle, Kobo, Boox, reMarkable and color e-ink devices. Supports Floyd-Steinberg, Ordered, and Atkinson dithering. Exports true 4-bit/8-bit grayscale PNG and BMP3 files. Offline-capable PWA." />
+  <title>E-ink Wallpaper Maker</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Cropper.js -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles.css" />
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            ink: {
+              50:  '#f0f4ff',
+              100: '#dde6ff',
+              200: '#c2d0ff',
+              300: '#9db0ff',
+              400: '#7585fc',
+              500: '#5b63f6',
+              600: '#4843eb',
+              700: '#3b34cf',
+              800: '#3230a7',
+              900: '#2e2e84',
+              950: '#1c1b50',
+            },
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased h-screen flex flex-col overflow-hidden transition-colors duration-200">
+
+  <!-- Top Nav -->
+  <header class="glass-nav border-b border-slate-200/60 dark:border-slate-800/60 px-6 py-3 flex items-center justify-between z-20 flex-shrink-0 transition-colors duration-200">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-ink-500 to-ink-700 flex items-center justify-center shadow-lg shadow-ink-900/50">
+        <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+          <line x1="12" y1="18" x2="12" y2="18"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="text-sm font-semibold text-slate-900 dark:text-white leading-none">E-ink Wallpaper Maker</h1>
+        <p class="text-[10px] text-slate-500 dark:text-slate-400 leading-none mt-0.5">Kindle Screensaver Generator</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="status-badge" class="hidden items-center gap-1.5 text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-full px-2.5 py-1 transition-colors duration-200">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400 animate-pulse"></span>
+        Image loaded
+      </span>
+      <button id="btn-theme-toggle" class="p-1.5 rounded-lg bg-slate-200/50 hover:bg-slate-200 dark:bg-slate-800/50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300/40 dark:border-slate-700/40 transition-all duration-200" title="Toggle theme">
+        <!-- Sun Icon (visible in dark mode) -->
+        <svg id="theme-sun-icon" class="w-4 h-4 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="4"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        <!-- Moon Icon (visible in light mode) -->
+        <svg id="theme-moon-icon" class="w-4 h-4 block dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+      </button>
+      <button id="btn-install" class="hidden text-xs bg-ink-600 hover:bg-ink-500 text-white rounded-lg px-3 py-1.5 transition-colors font-medium">
+        Install App
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Split Layout -->
+  <main class="flex flex-1 min-h-0 overflow-hidden">
+
+    <!-- LEFT PANE: Dropzone / Cropper -->
+    <section class="flex-1 min-h-0 relative flex flex-col bg-slate-100 dark:bg-slate-950 overflow-hidden transition-colors duration-200">
+
+      <!-- Dropzone (shown when no image) -->
+      <div id="dropzone" class="flex-1 flex flex-col items-center justify-center m-4 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-ink-500 transition-all duration-300 cursor-pointer group relative overflow-hidden bg-white/30 dark:bg-transparent">
+        <!-- Animated grid background -->
+        <div class="absolute inset-0 grid-bg opacity-30 pointer-events-none"></div>
+
+        <!-- Glow orbs -->
+        <div class="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-ink-600/10 rounded-full blur-3xl pointer-events-none group-hover:bg-ink-500/20 transition-colors duration-500"></div>
+
+        <div class="relative z-10 flex flex-col items-center gap-5 select-none">
+          <div class="w-20 h-20 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/60 flex items-center justify-center shadow-md dark:shadow-xl group-hover:border-ink-500/40 dark:group-hover:shadow-ink-950/30 transition-all duration-300">
+            <svg class="w-9 h-9 text-slate-400 dark:text-slate-500 group-hover:text-ink-600 dark:group-hover:text-ink-400 transition-colors duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+            </svg>
+          </div>
+          <div class="text-center">
+            <p class="text-base font-medium text-slate-600 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">Drop image here</p>
+            <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">or <span class="text-ink-600 dark:text-ink-400 group-hover:text-ink-700 dark:group-hover:text-ink-300 transition-colors">click to browse</span> • Paste from clipboard</p>
+          </div>
+          <div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-600">
+            <span class="flex items-center gap-1">
+              <kbd class="bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded px-1.5 py-0.5 font-mono text-[10px]">Ctrl</kbd>
+              <span>+</span>
+              <kbd class="bg-slate-200 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded px-1.5 py-0.5 font-mono text-[10px]">V</kbd>
+              <span class="ml-1">to paste</span>
+            </span>
+            <span class="text-slate-700">•</span>
+            <span>JPG, PNG, WebP, GIF</span>
+          </div>
+        </div>
+
+        <!-- Hidden file input -->
+        <input type="file" id="file-input" accept="image/*" class="absolute inset-0 opacity-0 cursor-pointer" />
+      </div>
+
+      <!-- Cropper Wrapper (hidden until image loaded) -->
+      <div id="cropper-wrapper" class="flex-1 min-h-0 hidden relative m-4 rounded-2xl overflow-hidden bg-slate-200 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 shadow-inner">
+        <img id="cropper-image" src="" alt="Source image for cropping" class="block max-w-full max-h-full" />
+
+      <!-- Cropper overlay controls -->
+        <div class="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 z-30">
+          <button id="btn-rotate-left" title="Rotate 90° left" class="tool-btn">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></svg>
+          </button>
+          <button id="btn-rotate-right" title="Rotate 90° right" class="tool-btn">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3"/></svg>
+          </button>
+          <button id="btn-flip-h" title="Flip horizontal" class="tool-btn">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12M8 12h12M8 17h12M4 7v10"/></svg>
+          </button>
+          <button id="btn-fit" title="Auto-fit crop box" class="tool-btn text-ink-400 hover:bg-ink-500/10 hover:border-ink-500/30">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>
+          </button>
+          <div class="w-px h-5 bg-slate-600 mx-1"></div>
+          <button id="btn-clear" title="Clear image" class="tool-btn text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <!-- Zoom level badge (top-right, fades in on scroll) -->
+        <div
+          id="zoom-badge"
+          class="absolute top-3 right-3 z-30 opacity-0 scale-90 transition-all duration-200
+                 bg-slate-900/90 backdrop-blur-sm border border-slate-700/80
+                 text-xs font-mono text-ink-300 rounded-lg px-2.5 py-1 pointer-events-none
+                 flex items-center gap-1.5"
+        >
+          <svg class="w-3 h-3 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35"/></svg>
+          <span>100%</span>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Resize Handle -->
+    <div id="resize-handle" class="w-1 bg-slate-200 dark:bg-slate-800 hover:bg-ink-400 dark:hover:bg-ink-600 transition-colors cursor-col-resize flex-shrink-0 relative group">
+      <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-8 rounded-full bg-slate-400 dark:bg-slate-700 group-hover:bg-ink-500 transition-colors"></div>
+    </div>
+
+    <!-- RIGHT PANE: Controls -->
+    <aside id="right-pane" class="w-80 flex flex-col bg-slate-100/90 dark:bg-slate-900/80 border-l border-slate-200/60 dark:border-slate-800/60 overflow-y-auto flex-shrink-0 transition-colors duration-200">
+
+      <div class="p-4 space-y-4">
+
+        <!-- Device Profile Section -->
+        <div class="control-card">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="section-title">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>
+              Device Profile
+            </h2>
+          </div>
+
+          <select id="device-select" class="select-field w-full mb-1">
+            <optgroup label="📱 Kindle">
+              <option value="K45T" >Kindle 4/5/Touch (2011-12) — 600×800 · 16 gray</option>
+              <option value="KPW1" >Kindle PW1 (2012) — 758×1024 · 16 gray</option>
+              <option value="KPW2" >Kindle PW2 (2013) — 758×1024 · 16 gray</option>
+              <option value="KPW34">Kindle PW3/4 (2015-18) — 1072×1448 · 16 gray</option>
+              <option value="KPW5" >Kindle PW5 11G (2021) — 1236×1648 · 16 gray</option>
+              <option value="KPW6" >Kindle PW6 12G (2024) — 1264×1680 · 16 gray</option>
+              <option value="KO3"  >Kindle Oasis 3 (2019) — 1264×1680 · 16 gray</option>
+              <option value="KS"   >Kindle Scribe (2022) — 1860×2480 · 16 gray</option>
+              <option value="KC"   >🎨 Kindle Colorsoft (2024) — 1264×1680</option>
+              <option value="KSC"  >🎨 Kindle Scribe Colorsoft (2025) — 1980×2640</option>
+            </optgroup>
+            <optgroup label="📚 Kobo">
+              <option value="KoboLibra2"  >Kobo Libra 2 (2021) — 1264×1680 · 16 gray</option>
+              <option value="KoboElipsa2E">Kobo Elipsa 2E (2023) — 1404×1872 · 16 gray</option>
+              <option value="KoboLibraC"  >🎨 Kobo Libra Colour (2024) — 1264×1680</option>
+              <option value="KoboClaraC"  >🎨 Kobo Clara Colour (2024) — 1072×1448</option>
+            </optgroup>
+            <optgroup label="✏️ reMarkable / Supernote">
+              <option value="RM2"  >reMarkable 2 (2020) — 1872×2404 · 16 gray</option>
+              <option value="SNA5X">Supernote A5X (2021) — 1404×1872 · 16 gray</option>
+            </optgroup>
+            <optgroup label="💻 Onyx Boox">
+              <option value="BooxNA3"  >Boox Note Air3 (2023) — 1404×1872 · 32 gray</option>
+              <option value="BooxNA3C" >🎨 Boox Note Air3 C (2023) — 1404×1872</option>
+              <option value="BooxTabX" >Boox Tab X (2023) — 2480×3248 · 32 gray</option>
+              <option value="BooxPalma">Boox Palma (2023) — 824×1648 · 16 gray</option>
+            </optgroup>
+            <optgroup label="📖 PocketBook">
+              <option value="PBIPColor3">🎨 InkPad Color 3 (2023) — 1404×1872</option>
+            </optgroup>
+            <option value="custom">⚙️ Custom…</option>
+          </select>
+
+          <!-- Device tech badge -->
+          <p id="device-info" class="text-[10px] text-ink-400/80 mb-2 font-mono"></p>
+
+          <!-- Custom dimensions (hidden by default) -->
+          <div id="custom-dims" class="hidden grid grid-cols-2 gap-2 mb-3">
+            <div>
+              <label class="text-[10px] text-slate-500 dark:text-slate-400 mb-1 block font-medium uppercase tracking-wider">Width px</label>
+              <input id="custom-width" type="number" value="758" min="1" max="9999" class="input-field w-full" />
+            </div>
+            <div>
+              <label class="text-[10px] text-slate-500 dark:text-slate-400 mb-1 block font-medium uppercase tracking-wider">Height px</label>
+              <input id="custom-height" type="number" value="1024" min="1" max="9999" class="input-field w-full" />
+            </div>
+            <div class="col-span-2">
+              <label class="text-[10px] text-slate-500 dark:text-slate-400 mb-1 block font-medium uppercase tracking-wider">Gray Levels</label>
+              <select id="custom-gray-levels" class="select-field w-full">
+                <option value="16">16 levels — 4-bit PNG (E-ink standard)</option>
+                <option value="256">256 levels — 8-bit PNG (full grayscale)</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="profile-dims" class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>
+            <span id="dims-label">758 × 1024 px</span>
+            <span class="text-slate-300 dark:text-slate-700">•</span>
+            <span id="ratio-label">Ratio 0.74:1</span>
+          </div>
+
+          <!-- Import / Export Profile -->
+          <div class="flex gap-2 mt-3">
+            <button id="btn-export-profile" class="flex-1 btn-secondary text-xs">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              Export
+            </button>
+            <button id="btn-import-profile" class="flex-1 btn-secondary text-xs">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v13"/></svg>
+              Import
+            </button>
+            <input type="file" id="profile-import-input" accept=".json" class="hidden" />
+          </div>
+        </div>
+
+        <!-- Adjustments Section -->
+        <div class="control-card">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="section-title">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1M4.22 4.22l.71.71m13.14 13.14l.71.71M3 12H4m16 0h1M4.22 19.78l.71-.71m13.14-13.14l.71-.71M12 7a5 5 0 100 10 5 5 0 000-10z"/></svg>
+              Adjustments
+            </h2>
+            <button id="btn-reset-adjustments" class="text-[10px] text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors">Reset</button>
+          </div>
+
+          <!-- Brightness -->
+          <div class="slider-group">
+            <div class="flex justify-between items-center mb-1.5">
+              <label for="slider-brightness" class="slider-label">Brightness</label>
+              <span id="val-brightness" class="slider-value">0</span>
+            </div>
+            <input type="range" id="slider-brightness" min="-100" max="100" value="0" step="1" class="slider-input" />
+          </div>
+
+          <!-- Contrast -->
+          <div class="slider-group">
+            <div class="flex justify-between items-center mb-1.5">
+              <label for="slider-contrast" class="slider-label">Contrast</label>
+              <span id="val-contrast" class="slider-value">0</span>
+            </div>
+            <input type="range" id="slider-contrast" min="-100" max="100" value="0" step="1" class="slider-input" />
+          </div>
+
+          <!-- Gamma -->
+          <div class="slider-group">
+            <div class="flex justify-between items-center mb-1.5">
+              <label for="slider-gamma" class="slider-label">Gamma</label>
+              <span id="val-gamma" class="slider-value">1.00</span>
+            </div>
+            <input type="range" id="slider-gamma" min="10" max="300" value="100" step="1" class="slider-input" />
+          </div>
+
+          <!-- Sharpness -->
+          <div class="slider-group">
+            <div class="flex justify-between items-center mb-1.5">
+              <label for="slider-sharpness" class="slider-label">Sharpness</label>
+              <span id="val-sharpness" class="slider-value">0</span>
+            </div>
+            <input type="range" id="slider-sharpness" min="0" max="100" value="0" step="1" class="slider-input" />
+          </div>
+
+          <!-- Dithering Algorithm -->
+          <div class="slider-group">
+            <div class="flex justify-between items-center mb-1.5">
+              <label for="dither-select" class="slider-label">Dither Algorithm</label>
+            </div>
+            <select id="dither-select" class="select-field w-full">
+              <option value="floyd-steinberg">Floyd-Steinberg (error diffusion)</option>
+              <option value="ordered">Ordered / Bayer 8×8 (halftone)</option>
+              <option value="atkinson">Atkinson (artistic)</option>
+            </select>
+          </div>
+
+          <!-- Dithering Enable Toggle -->
+          <div class="flex items-center justify-between mt-1">
+            <span class="text-xs font-medium text-slate-600 dark:text-slate-400">Enable Dithering</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-dithering" checked />
+              <span class="toggle-knob"></span>
+            </label>
+          </div>
+
+          <!-- Invert Colors -->
+          <div class="flex items-center justify-between mt-1 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <span class="text-xs font-medium text-slate-700 dark:text-slate-300">Invert Colors</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-invert" />
+              <span class="toggle-knob"></span>
+            </label>
+          </div>
+
+          <!-- Auto-Level -->
+          <div class="flex items-center justify-between mt-1">
+            <div>
+              <span class="text-xs font-medium text-slate-700 dark:text-slate-300">Auto-Level</span>
+              <p class="text-[10px] text-slate-400 dark:text-slate-600">Histogram equalization</p>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-auto-level" />
+              <span class="toggle-knob"></span>
+            </label>
+          </div>
+
+          <!-- Color E-ink Controls (shown only for color devices) -->
+          <div id="color-controls" class="hidden mt-1 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="w-2 h-2 rounded-full bg-gradient-to-r from-rose-400 to-violet-400 flex-shrink-0"></span>
+              <span class="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider font-medium">Color E-Ink Controls</span>
+            </div>
+            <div class="slider-group">
+              <div class="flex justify-between items-center mb-1.5">
+                <label for="slider-saturation" class="slider-label">Saturation</label>
+                <span id="val-saturation" class="slider-value">0</span>
+              </div>
+              <input type="range" id="slider-saturation" min="-100" max="100" value="0" step="1" class="slider-input" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Preview Section -->
+        <div class="control-card">
+          <h2 class="section-title mb-3">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            E-ink Preview
+          </h2>
+
+          <!-- Preview Canvas Container -->
+          <div class="relative bg-white dark:bg-slate-950 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 mb-3 transition-colors duration-200" style="min-height:140px;">
+            <div id="preview-placeholder" class="absolute inset-0 flex flex-col items-center justify-center gap-2">
+              <svg class="w-8 h-8 text-slate-300 dark:text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              <p class="text-xs text-slate-400 dark:text-slate-700">Preview will appear here</p>
+            </div>
+            <canvas id="preview-canvas" class="w-full h-auto hidden rounded-xl"></canvas>
+
+            <!-- Processing overlay -->
+            <div id="processing-overlay" class="hidden absolute inset-0 bg-white/80 dark:bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3 rounded-xl z-10">
+              <div class="spinner"></div>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Processing…</p>
+            </div>
+          </div>
+
+          <!-- Histogram -->
+          <div class="mb-3">
+            <p class="text-[10px] text-slate-500 dark:text-slate-600 mb-1.5 uppercase tracking-wider font-medium">Tone Histogram</p>
+            <canvas id="histogram-canvas" width="256" height="48" class="w-full rounded-lg bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 transition-colors duration-200"></canvas>
+          </div>
+
+          <button id="btn-preview" class="btn-primary w-full mb-2">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 3l14 9-14 9V3z"/></svg>
+            Preview E-ink Effect
+          </button>
+
+          <!-- Download Buttons: PNG + BMP side by side -->
+          <div class="grid grid-cols-2 gap-2">
+            <button id="btn-download" class="btn-success" disabled>
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+              PNG
+            </button>
+            <button id="btn-download-bmp" class="btn-secondary text-xs" disabled
+              title="Download uncompressed BMP3 (1/4/8-bit grayscale or 24-bit color)">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+              BMP3
+            </button>
+          </div>
+        </div>
+
+        <!-- Stats Card -->
+        <div id="stats-card" class="control-card hidden">
+          <h2 class="section-title mb-3">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+            Output Stats
+          </h2>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div class="stat-item">
+              <span class="stat-label">Resolution</span>
+              <span id="stat-resolution" class="stat-value">—</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Output Depth</span>
+              <span id="stat-levels" class="stat-value">16 (4-bit)</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Process Time</span>
+              <span id="stat-time" class="stat-value">—</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Unique Tones</span>
+              <span id="stat-tones" class="stat-value">—</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </main>
+
+  <!-- Loupe canvas (fixed, follows cursor over preview) -->
+  <canvas id="loupe-canvas" width="140" height="140"></canvas>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden">
+    <span id="toast-icon"></span>
+    <span id="toast-msg"></span>
+  </div>
+
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js')
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.warn('SW failed:', err));
+      });
+    }
+  </script>
+</body>
+</html>
