@@ -50,6 +50,20 @@ const BAYER_8X8 = [
   [63,31,55,23,61,29,53,21],
 ];
 
+/** Bayer 4×4 ordered dithering threshold matrix. */
+const BAYER_4X4 = [
+  [ 0,  8,  2, 10],
+  [12,  4, 14,  6],
+  [ 3, 11,  1,  9],
+  [15,  7, 13,  5],
+];
+
+/** Bayer 2x2 ordered dithering threshold matrix. */
+const BAYER_2X2 = [
+  [0, 2],
+  [3, 1],
+];
+
 /**
  * Build a uniform grayscale palette with `levels` entries spanning 0-255.
  * E.g. buildPalette(16) → [0,17,34,...,255]; buildPalette(256) → [0,1,2,...,255]
@@ -76,11 +90,13 @@ let state = {
   cropper: null,
   processedCanvas: null,
   fitZoomRatio: null,   // the zoom ratio that shows the full image in the container
+  originalFileSize: null,
   settings: {
     device: 'KPW2',
     customWidth: 758,
     customHeight: 1024,
     customGrayLevels: 16,
+    customColor: false,
     brightness: 0,
     contrast: 0,
     gamma: 1.0,
@@ -90,6 +106,9 @@ let state = {
     autoLevel: false,
     ditherAlgorithm: 'floyd-steinberg',
     dithering: true,
+    downloadFormat: 'png',
+    jpgQuality: 85,
+    bayerSize: 8,
   },
 };
 
@@ -99,6 +118,7 @@ let state = {
 const $ = id => document.getElementById(id);
 
 const dom = {
+  leftPane:          $('left-pane'),
   dropzone:          $('dropzone'),
   fileInput:         $('file-input'),
   cropperWrapper:    $('cropper-wrapper'),
@@ -109,13 +129,19 @@ const dom = {
   customWidth:       $('custom-width'),
   customHeight:      $('custom-height'),
   customGrayLevels:  $('custom-gray-levels'),
+  customColorToggle: $('custom-color-toggle'),
   ditherSelect:      $('dither-select'),
+  bayerSizeContainer:$('bayer-size-container'),
+  bayerSizeSelect:   $('bayer-size-select'),
   toggleInvert:      $('toggle-invert'),
   toggleAutoLevel:   $('toggle-auto-level'),
   sliderSaturation:  $('slider-saturation'),
   valSaturation:     $('val-saturation'),
   colorControls:     $('color-controls'),
-  btnDownloadBmp:    $('btn-download-bmp'),
+  downloadFormat:      $('download-format'),
+  jpgQualityContainer: $('jpg-quality-container'),
+  sliderJpgQuality:    $('slider-jpg-quality'),
+  valJpgQuality:       $('val-jpg-quality'),
   loupeCanvas:       $('loupe-canvas'),
   deviceInfo:        $('device-info'),
   dimsLabel:         $('dims-label'),
@@ -151,6 +177,8 @@ const dom = {
   statLevels:        $('stat-levels'),
   statTime:          $('stat-time'),
   statTones:         $('stat-tones'),
+  statSize:          $('stat-size'),
+  statRatio:         $('stat-ratio'),
   toast:             $('toast'),
   toastMsg:          $('toast-msg'),
   toastIcon:         $('toast-icon'),
@@ -183,6 +211,7 @@ function init() {
   updateSliderTrack(dom.sliderGamma);
   updateSliderTrack(dom.sliderSharpness);
   if (dom.sliderSaturation) updateSliderTrack(dom.sliderSaturation);
+  if (dom.sliderJpgQuality) updateSliderTrack(dom.sliderJpgQuality);
   setupLoupe();
 }
 
@@ -212,8 +241,24 @@ function applySettingsToUI() {
   dom.deviceSelect.value = s.device;
   dom.customWidth.value  = s.customWidth;
   dom.customHeight.value = s.customHeight;
-  if (dom.customGrayLevels) dom.customGrayLevels.value = String(s.customGrayLevels);
+  if (dom.customGrayLevels) {
+    dom.customGrayLevels.value = String(s.customGrayLevels);
+    dom.customGrayLevels.disabled = !!s.customColor;
+  }
+  if (dom.customColorToggle) {
+    dom.customColorToggle.checked = !!s.customColor;
+  }
   if (dom.ditherSelect)      dom.ditherSelect.value      = s.ditherAlgorithm;
+  if (dom.bayerSizeSelect) {
+    dom.bayerSizeSelect.value = String(s.bayerSize || 8);
+  }
+  if (dom.bayerSizeContainer) {
+    if (s.ditherAlgorithm === 'ordered') {
+      dom.bayerSizeContainer.classList.remove('hidden');
+    } else {
+      dom.bayerSizeContainer.classList.add('hidden');
+    }
+  }
   if (dom.toggleInvert)      dom.toggleInvert.checked    = s.invert;
   if (dom.toggleAutoLevel)   dom.toggleAutoLevel.checked = s.autoLevel;
   if (dom.sliderSaturation)  dom.sliderSaturation.value  = s.saturation;
@@ -233,6 +278,23 @@ function applySettingsToUI() {
   if (s.device === 'custom') dom.customDims.classList.remove('hidden');
   else dom.customDims.classList.add('hidden');
 
+  if (dom.downloadFormat) {
+    dom.downloadFormat.value = s.downloadFormat || 'png';
+  }
+  if (dom.sliderJpgQuality) {
+    dom.sliderJpgQuality.value = s.jpgQuality || 85;
+  }
+  if (dom.valJpgQuality) {
+    dom.valJpgQuality.textContent = (s.jpgQuality || 85) + '%';
+  }
+  if (dom.jpgQualityContainer) {
+    if ((s.downloadFormat || 'png') === 'jpg') {
+      dom.jpgQualityContainer.classList.remove('hidden');
+    } else {
+      dom.jpgQualityContainer.classList.add('hidden');
+    }
+  }
+
   updateDimsDisplay();
 }
 
@@ -250,7 +312,7 @@ function getCurrentProfile() {
       grayLevels: parseInt(dom.customGrayLevels?.value, 10) || state.settings.customGrayLevels || 16,
       ppi:        0,
       tech:       'Custom',
-      color:      false,
+      color:      !!state.settings.customColor,
     };
   }
   return DEVICE_PROFILES[d] || DEVICE_PROFILES.KPW2;
@@ -361,11 +423,41 @@ function bindEvents() {
     state.settings.customGrayLevels = parseInt(dom.customGrayLevels.value, 10);
     saveSettings();
   });
+  dom.customColorToggle?.addEventListener('change', () => {
+    state.settings.customColor = dom.customColorToggle.checked;
+    if (dom.customGrayLevels) {
+      dom.customGrayLevels.disabled = state.settings.customColor;
+    }
+    updateDimsDisplay();
+    saveSettings();
+    if (state.cropper) {
+      runPipeline();
+    }
+  });
 
   /* ── Dither algorithm ── */
   dom.ditherSelect?.addEventListener('change', () => {
     state.settings.ditherAlgorithm = dom.ditherSelect.value;
+    if (dom.bayerSizeContainer) {
+      if (state.settings.ditherAlgorithm === 'ordered') {
+        dom.bayerSizeContainer.classList.remove('hidden');
+      } else {
+        dom.bayerSizeContainer.classList.add('hidden');
+      }
+    }
     saveSettings();
+    if (state.cropper) {
+      runPipeline();
+    }
+  });
+
+  /* ── Bayer Array Size ── */
+  dom.bayerSizeSelect?.addEventListener('change', () => {
+    state.settings.bayerSize = parseInt(dom.bayerSizeSelect.value, 10);
+    saveSettings();
+    if (state.cropper) {
+      runPipeline();
+    }
   });
 
   /* ── Invert toggle ── */
@@ -389,8 +481,30 @@ function bindEvents() {
     saveSettings();
   });
 
-  /* ── BMP Download ── */
-  dom.btnDownloadBmp?.addEventListener('click', downloadBMP);
+  /* ── Download Format & JPG Quality ── */
+  dom.downloadFormat?.addEventListener('change', () => {
+    state.settings.downloadFormat = dom.downloadFormat.value;
+    if (dom.jpgQualityContainer) {
+      if (state.settings.downloadFormat === 'jpg') {
+        dom.jpgQualityContainer.classList.remove('hidden');
+      } else {
+        dom.jpgQualityContainer.classList.add('hidden');
+      }
+    }
+    saveSettings();
+    updateOutputSizeStat();
+  });
+
+  dom.sliderJpgQuality?.addEventListener('input', () => {
+    const v = parseInt(dom.sliderJpgQuality.value, 10);
+    state.settings.jpgQuality = v;
+    if (dom.valJpgQuality) {
+      dom.valJpgQuality.textContent = v + '%';
+    }
+    updateSliderTrack(dom.sliderJpgQuality);
+    saveSettings();
+    updateOutputSizeStat();
+  });
 
   /* ── Sliders ── */
   dom.sliderBrightness.addEventListener('input', () => {
@@ -467,6 +581,24 @@ function bindEvents() {
   /* ── Resize Handle ── */
   setupResizeHandle();
 
+  /* ── Mobile Auto-Collapse Header ── */
+  dom.rightPane.addEventListener('scroll', () => {
+    if (window.innerWidth <= 768) {
+      const header = document.querySelector('header');
+      if (dom.rightPane.scrollTop > 20) {
+        header.classList.add('header-collapsed');
+      } else {
+        header.classList.remove('header-collapsed');
+      }
+    }
+  });
+
+  dom.leftPane?.addEventListener('touchstart', () => {
+    if (window.innerWidth <= 768) {
+      document.querySelector('header').classList.add('header-collapsed');
+    }
+  }, { passive: true });
+
   /* ── Theme Toggle ── */
   dom.btnThemeToggle?.addEventListener('click', () => {
     const isDark = document.documentElement.classList.contains('dark');
@@ -507,6 +639,7 @@ function init() {
    IMAGE LOADING & CROPPER
    ============================================================ */
 function loadImage(file) {
+  state.originalFileSize = file.size;
   const reader = new FileReader();
   reader.onload = e => {
     const dataURL = e.target.result;
@@ -545,8 +678,16 @@ function loadImage(file) {
         updateZoomBadge();      // show initial zoom level
       },
       zoom() {
+        if (window.innerWidth <= 768) {
+          document.querySelector('header')?.classList.add('header-collapsed');
+        }
         // Defer so Cropper has committed the new canvas data
         requestAnimationFrame(updateZoomBadge);
+      },
+      cropstart() {
+        if (window.innerWidth <= 768) {
+          document.querySelector('header')?.classList.add('header-collapsed');
+        }
       },
     });
 
@@ -568,9 +709,9 @@ function clearImage() {
   dom.previewCanvas.classList.add('hidden');
   dom.previewPlaceholder.classList.remove('hidden');
   dom.btnDownload.disabled = true;
-  if (dom.btnDownloadBmp) dom.btnDownloadBmp.disabled = true;
   dom.statsCard.classList.add('hidden');
   state.processedCanvas = null;
+  state.originalFileSize = null;
   state.lastGray = null;
   state.lastRGB  = null;
   state.isColorOutput = false;
@@ -739,6 +880,8 @@ async function runPipeline() {
         orderedDither(gray, output, w, h, palette);
       } else if (ditherAlgorithm === 'atkinson') {
         atkinsonDither(gray, output, w, h, palette);
+      } else if (ditherAlgorithm === 'jjn') {
+        jjnDither(gray, output, w, h, palette);
       } else {
         floydSteinberg(gray, output, w, h, palette);
       }
@@ -777,7 +920,6 @@ async function runPipeline() {
     }
 
     dom.btnDownload.disabled = false;
-    if (dom.btnDownloadBmp) dom.btnDownloadBmp.disabled = false;
     dom.statsCard.classList.remove('hidden');
     showToast(`✓ Processed in ${(performance.now() - t0).toFixed(0)}ms`, 'ok');
 
@@ -930,10 +1072,82 @@ function updateStats(w, h, ms, tones, grayLevels, bitDepth) {
   dom.statTime.textContent       = `${ms.toFixed(0)}ms`;
   dom.statTones.textContent      = `${tones} / ${grayLevels}`;
   dom.statLevels.textContent     = `${grayLevels} (${bitDepth}-bit)`;
+  updateOutputSizeStat();
+}
+
+async function updateOutputSizeStat() {
+  if (!state.processedCanvas) {
+    if (dom.statSize) dom.statSize.textContent = '—';
+    if (dom.statRatio) dom.statRatio.textContent = '—';
+    return;
+  }
+
+  const format = dom.downloadFormat ? dom.downloadFormat.value : 'png';
+  let bytesCount = 0;
+
+  try {
+    if (format === 'png') {
+      if (state.isColorOutput) {
+        const blob = await new Promise(r => state.processedCanvas.toBlob(r, 'image/png'));
+        bytesCount = blob.size;
+      } else if (state.lastGray) {
+        const bitDepth   = state.lastBitDepth   || 4;
+        const grayLevels = state.lastGrayLevels || 16;
+        if (typeof CompressionStream !== 'undefined') {
+          const pngBytes = await encodeGrayscalePNG(
+            state.lastGray,
+            state.lastGrayW,
+            state.lastGrayH,
+            bitDepth,
+            grayLevels,
+          );
+          bytesCount = pngBytes.length;
+        } else {
+          const blob = await new Promise(r => state.processedCanvas.toBlob(r, 'image/png'));
+          bytesCount = blob.size;
+        }
+      }
+    } else if (format === 'bmp') {
+      const w = state.lastGrayW;
+      const h = state.lastGrayH;
+      if (state.isColorOutput && state.lastRGB) {
+        const rowStride = Math.floor((w * 3 + 3) / 4) * 4;
+        bytesCount = 54 + rowStride * h;
+      } else if (state.lastGray) {
+        const bitDepth = state.lastBitDepth || 4;
+        const paletteColors = 1 << bitDepth;
+        const rowStride = Math.floor(((w * bitDepth + 31) / 32)) * 4;
+        bytesCount = 54 + paletteColors * 4 + rowStride * h;
+      }
+    } else if (format === 'jpg') {
+      const quality = (state.settings.jpgQuality || 85) / 100;
+      const blob = await new Promise(r => state.processedCanvas.toBlob(r, 'image/jpeg', quality));
+      bytesCount = blob.size;
+    }
+
+    if (bytesCount > 0) {
+      const kb = (bytesCount / 1024).toFixed(1);
+      if (dom.statSize) dom.statSize.textContent = `${kb} KB`;
+
+      if (state.originalFileSize && dom.statRatio) {
+        const pct = ((bytesCount / state.originalFileSize) * 100).toFixed(1);
+        dom.statRatio.textContent = `${pct}%`;
+      } else {
+        if (dom.statRatio) dom.statRatio.textContent = '—';
+      }
+    } else {
+      if (dom.statSize) dom.statSize.textContent = '—';
+      if (dom.statRatio) dom.statRatio.textContent = '—';
+    }
+  } catch (e) {
+    console.error('Error estimating output size:', e);
+    if (dom.statSize) dom.statSize.textContent = '—';
+    if (dom.statRatio) dom.statRatio.textContent = '—';
+  }
 }
 
 /* ============================================================
-   DOWNLOAD PNG
+   DOWNLOAD OUTPUT
    ============================================================ */
 async function downloadOutput() {
   if (!state.processedCanvas) return;
@@ -944,54 +1158,89 @@ async function downloadOutput() {
   dom.btnDownload.disabled = true;
   dom.btnDownload.textContent = '⏳ Encoding…';
 
+  const format = dom.downloadFormat ? dom.downloadFormat.value : 'png';
+
   try {
-    let pngBytes;
+    let bytes;
     let filename;
+    let mimeType;
+    let savedMsg;
 
-    if (state.isColorOutput) {
-      /* Color e-ink — use canvas toDataURL (24-bit PNG, preserves RGB) */
-      filename = `${profile.name.replace(/\s/g, '_')}_color_${ts}.png`;
-      const dataURL = state.processedCanvas.toDataURL('image/png');
-      const res = await fetch(dataURL);
-      pngBytes  = new Uint8Array(await res.arrayBuffer());
-    } else if (state.lastGray) {
-      const bitDepth   = state.lastBitDepth   || 4;
-      const grayLevels = state.lastGrayLevels || 16;
-      filename = `${profile.name.replace(/\s/g, '_')}_${bitDepth}bit_${ts}.png`;
-
-      if (typeof CompressionStream !== 'undefined') {
-        pngBytes = await encodeGrayscalePNG(
-          state.lastGray,
-          state.lastGrayW,
-          state.lastGrayH,
-          bitDepth,
-          grayLevels,
-        );
-      } else {
-        /* Fallback: 8-bit RGBA PNG via Canvas */
+    if (format === 'png') {
+      mimeType = 'image/png';
+      if (state.isColorOutput) {
+        /* Color e-ink — use canvas toDataURL (24-bit PNG, preserves RGB) */
+        filename = `${profile.name.replace(/\s/g, '_')}_color_${ts}.png`;
         const dataURL = state.processedCanvas.toDataURL('image/png');
-        const res  = await fetch(dataURL);
-        pngBytes   = new Uint8Array(await res.arrayBuffer());
-        showToast('⚠ CompressionStream unavailable — using 8-bit RGBA fallback', 'warn');
+        const res = await fetch(dataURL);
+        bytes  = new Uint8Array(await res.arrayBuffer());
+      } else if (state.lastGray) {
+        const bitDepth   = state.lastBitDepth   || 4;
+        const grayLevels = state.lastGrayLevels || 16;
+        filename = `${profile.name.replace(/\s/g, '_')}_${bitDepth}bit_${ts}.png`;
+
+        if (typeof CompressionStream !== 'undefined') {
+          bytes = await encodeGrayscalePNG(
+            state.lastGray,
+            state.lastGrayW,
+            state.lastGrayH,
+            bitDepth,
+            grayLevels,
+          );
+        } else {
+          /* Fallback: 8-bit RGBA PNG via Canvas */
+          const dataURL = state.processedCanvas.toDataURL('image/png');
+          const res  = await fetch(dataURL);
+          bytes   = new Uint8Array(await res.arrayBuffer());
+          showToast('⚠ CompressionStream unavailable — using 8-bit RGBA fallback', 'warn');
+        }
+      } else {
+        showToast('⚠ No processed image — run Preview first', 'warn');
+        return;
       }
-    } else {
-      showToast('⚠ No processed image — run Preview first', 'warn');
-      return;
+      savedMsg = `✓ PNG saved · ${(bytes.length / 1024).toFixed(1)} KB`;
+
+    } else if (format === 'bmp') {
+      mimeType = 'image/bmp';
+      if (state.isColorOutput && state.lastRGB) {
+        /* 24-bit color BMP */
+        filename = `${profile.name.replace(/\s/g,'_')}_24bit_${ts}.bmp`;
+        bytes = encodeBMP3(state.lastRGB, state.lastGrayW, state.lastGrayH, 24, []);
+      } else if (state.lastGray) {
+        const bitDepth   = state.lastBitDepth;
+        const grayLevels = state.lastGrayLevels;
+        const palette    = buildPalette(grayLevels);
+        filename = `${profile.name.replace(/\s/g,'_')}_${bitDepth}bit_${ts}.bmp`;
+        bytes = encodeBMP3(state.lastGray, state.lastGrayW, state.lastGrayH, bitDepth, palette);
+      } else {
+        showToast('⚠ No processed image — run Preview first', 'warn');
+        return;
+      }
+      savedMsg = `✓ BMP3 saved · ${(bytes.length / 1024).toFixed(1)} KB`;
+
+    } else if (format === 'jpg') {
+      mimeType = 'image/jpeg';
+      filename = `${profile.name.replace(/\s/g, '_')}_${ts}.jpg`;
+      const quality = (state.settings.jpgQuality || 85) / 100;
+      const dataURL = state.processedCanvas.toDataURL('image/jpeg', quality);
+      const res = await fetch(dataURL);
+      bytes = new Uint8Array(await res.arrayBuffer());
+      savedMsg = `✓ JPG saved · ${(bytes.length / 1024).toFixed(1)} KB`;
     }
 
-    const blob = new Blob([pngBytes], { type: 'image/png' });
-    const url  = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = filename;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
-
-    const kb = (pngBytes.length / 1024).toFixed(1);
-    showToast(`✓ PNG saved · ${kb} KB`, 'ok');
+    if (bytes) {
+      const blob = new Blob([bytes], { type: mimeType });
+      const url  = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+      showToast(savedMsg, 'ok');
+    }
 
   } catch (err) {
-    console.error('PNG export error:', err);
+    console.error('Export error:', err);
     showToast(`✗ Export failed: ${err.message}`, 'error');
   } finally {
     dom.btnDownload.innerHTML = btnHTML;
@@ -1009,6 +1258,7 @@ function exportProfile() {
     customWidth:      state.settings.customWidth,
     customHeight:     state.settings.customHeight,
     customGrayLevels:  state.settings.customGrayLevels,
+    customColor:       state.settings.customColor,
     brightness:        state.settings.brightness,
     contrast:          state.settings.contrast,
     gamma:             state.settings.gamma,
@@ -1172,34 +1422,82 @@ function hideZoomBadge() {
 }
 
 /* ============================================================
-   RESIZE HANDLE (drag to resize sidebar)
+   RESIZE HANDLE (drag to resize sidebar on desktop / drawer height on mobile)
    ============================================================ */
 function setupResizeHandle() {
   let dragging = false;
-  let startX, startW;
+  let startX, startY;
+  let startW, startH;
 
-  dom.resizeHandle.addEventListener('mousedown', e => {
+  const onStart = (clientX, clientY) => {
     dragging = true;
-    startX = e.clientX;
+    startX = clientX;
+    startY = clientY;
     startW = dom.rightPane.offsetWidth;
-    document.body.style.cursor = 'col-resize';
+    startH = dom.leftPane.offsetHeight;
     document.body.style.userSelect = 'none';
+  };
+
+  const onMove = (clientX, clientY) => {
+    if (!dragging) return;
+    const isMobile = window.innerWidth <= 768;
+    if (isMobile) {
+      // Vertical drag: dragging down expands left pane
+      const dy = clientY - startY;
+      const mainElement = dom.rightPane.parentElement;
+      const mainH = mainElement.offsetHeight;
+      
+      // Limit left pane height between 20% and 80% of main height
+      const newH = clamp(startH + dy, mainH * 0.20, mainH * 0.80);
+      dom.leftPane.style.height = `${newH}px`;
+      if (state.cropper) {
+        state.cropper.resize();
+      }
+    } else {
+      // Horizontal drag: dragging left expands sidebar
+      const dx = startX - clientX;
+      const newW = clamp(startW + dx, 260, 480);
+      dom.rightPane.style.width = `${newW}px`;
+    }
+  };
+
+  const onEnd = () => {
+    if (dragging) {
+      dragging = false;
+      document.body.style.userSelect = '';
+    }
+  };
+
+  // Mouse Listeners
+  dom.resizeHandle.addEventListener('mousedown', e => {
+    onStart(e.clientX, e.clientY);
+    document.body.style.cursor = window.innerWidth <= 768 ? 'row-resize' : 'col-resize';
   });
 
   document.addEventListener('mousemove', e => {
-    if (!dragging) return;
-    const dx = startX - e.clientX; // dragging left = bigger sidebar
-    const newW = clamp(startW + dx, 260, 480);
-    dom.rightPane.style.width = `${newW}px`;
+    onMove(e.clientX, e.clientY);
   });
 
   document.addEventListener('mouseup', () => {
-    if (dragging) {
-      dragging = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    }
+    onEnd();
+    document.body.style.cursor = '';
   });
+
+  // Touch Listeners
+  dom.resizeHandle.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) {
+      onStart(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchmove', e => {
+    if (dragging && e.touches.length === 1) {
+      onMove(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', onEnd);
+  document.addEventListener('touchcancel', onEnd);
 }
 
 /* ============================================================
@@ -1264,11 +1562,27 @@ function showToast(msg, type = 'info') {
    ============================================================ */
 function orderedDither(gray, output, w, h, palette) {
   const step = 255 / (palette.length - 1); // step between palette entries
+  const size = state.settings.bayerSize || 8;
+
+  let matrix = BAYER_8X8;
+  let divisor = 64;
+  let mask = 7;
+
+  if (size === 2) {
+    matrix = BAYER_2X2;
+    divisor = 4;
+    mask = 1;
+  } else if (size === 4) {
+    matrix = BAYER_4X4;
+    divisor = 16;
+    mask = 3;
+  }
+
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
-      // Add bias: (bayer / 64 - 0.5) × step gives symmetric spread around zero
-      const bias = (BAYER_8X8[y & 7][x & 7] / 64 - 0.5) * step;
+      // Add bias: (bayer / divisor - 0.5) × step gives symmetric spread around zero
+      const bias = (matrix[y & mask][x & mask] / divisor - 0.5) * step;
       output[idx] = quantize(clamp(gray[idx] + bias, 0, 255), palette);
     }
   }
@@ -1295,6 +1609,45 @@ function atkinsonDither(gray, output, w, h, palette) {
       if (y + 1 < h)               buf[idx + w]          += e;
       if (y + 1 < h && x + 1 < w)  buf[idx + w + 1]     += e;
       if (y + 2 < h)               buf[idx + w * 2]      += e;
+    }
+  }
+}
+
+/* ============================================================
+   JARVIS, JUDICE, NINKE (JJN) DITHERING
+   ============================================================ */
+function jjnDither(gray, output, w, h, palette) {
+  const buf = new Float32Array(gray);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const old = clamp(buf[idx], 0, 255);
+      const neu = quantize(old, palette);
+      const e   = (old - neu) / 48;
+      output[idx] = neu;
+
+      // Current row
+      if (x + 1 < w) buf[idx + 1] += e * 7;
+      if (x + 2 < w) buf[idx + 2] += e * 5;
+
+      // Row + 1
+      if (y + 1 < h) {
+        if (x - 2 >= 0) buf[idx + w - 2] += e * 3;
+        if (x - 1 >= 0) buf[idx + w - 1] += e * 5;
+        buf[idx + w] += e * 7;
+        if (x + 1 < w) buf[idx + w + 1] += e * 5;
+        if (x + 2 < w) buf[idx + w + 2] += e * 3;
+      }
+
+      // Row + 2
+      if (y + 2 < h) {
+        if (x - 2 >= 0) buf[idx + w * 2 - 2] += e * 1;
+        if (x - 1 >= 0) buf[idx + w * 2 - 1] += e * 3;
+        buf[idx + w * 2] += e * 5;
+        if (x + 1 < w) buf[idx + w * 2 + 1] += e * 3;
+        if (x + 2 < w) buf[idx + w * 2 + 2] += e * 1;
+      }
     }
   }
 }
@@ -1528,52 +1881,7 @@ function encodeBMP3(data, w, h, bitDepth, palette) {
   return buf;
 }
 
-/* ============================================================
-   DOWNLOAD BMP
-   ============================================================ */
-async function downloadBMP() {
-  if (!state.processedCanvas) return;
 
-  const profile  = getCurrentProfile();
-  const ts       = new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,15);
-  const btnHTML  = dom.btnDownloadBmp.innerHTML;
-  dom.btnDownloadBmp.disabled = true;
-  dom.btnDownloadBmp.textContent = '⏳ Encoding…';
-
-  try {
-    let bmpBytes;
-    let filename;
-
-    if (state.isColorOutput && state.lastRGB) {
-      /* 24-bit color BMP */
-      filename = `${profile.name.replace(/\s/g,'_')}_24bit_${ts}.bmp`;
-      bmpBytes = encodeBMP3(state.lastRGB, state.lastGrayW, state.lastGrayH, 24, []);
-    } else if (state.lastGray) {
-      const bitDepth   = state.lastBitDepth;
-      const grayLevels = state.lastGrayLevels;
-      const palette    = buildPalette(grayLevels);
-      filename = `${profile.name.replace(/\s/g,'_')}_${bitDepth}bit_${ts}.bmp`;
-      bmpBytes = encodeBMP3(state.lastGray, state.lastGrayW, state.lastGrayH, bitDepth, palette);
-    } else {
-      showToast('⚠ No processed image — run Preview first', 'warn'); return;
-    }
-
-    const blob = new Blob([bmpBytes], { type: 'image/bmp' });
-    const url  = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.download = filename; link.href = url; link.click();
-    URL.revokeObjectURL(url);
-
-    const kb = (bmpBytes.length / 1024).toFixed(1);
-    showToast(`✓ BMP3 · ${kb} KB — ${filename}`, 'ok');
-  } catch (err) {
-    console.error('BMP export error:', err);
-    showToast(`✗ BMP export failed: ${err.message}`, 'error');
-  } finally {
-    dom.btnDownloadBmp.innerHTML = btnHTML;
-    dom.btnDownloadBmp.disabled  = false;
-  }
-}
 
 /* ============================================================
    PNG ENCODER — true grayscale PNG at 1 / 2 / 4 / 8-bit depth
